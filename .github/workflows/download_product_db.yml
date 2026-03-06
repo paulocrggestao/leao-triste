@@ -1,11 +1,10 @@
 name: Download and commit product_database.py
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/download_product_db.yml'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   download-and-commit:
@@ -15,6 +14,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Download product_database.py
         run: |
@@ -22,12 +22,13 @@ jobs:
             "https://tmpfiles.org/dl/27477218/product_database_content.txt" \
             -o product_database.py
           echo "Downloaded file size: $(wc -c < product_database.py) bytes"
-          head -5 product_database.py
+          head -3 product_database.py
 
       - name: Commit and push
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           git add product_database.py
+          git status
           git commit -m "Add product database (2,022 food products)" || echo "Nothing to commit"
-          git push
+          git push origin main
