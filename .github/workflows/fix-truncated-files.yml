@@ -1,0 +1,37 @@
+name: Fix Truncated Files
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-truncated-files.yml'
+  workflow_dispatch:
+
+jobs:
+  fix-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all fixed files
+        run: |
+          curl -L -o README.md https://files.catbox.moe/cpmnp1.md
+          curl -L -o Dockerfile https://files.catbox.moe/1o3hhj
+          curl -L -o docker-compose.yml https://files.catbox.moe/yb77zt.yml
+          curl -L -o styles.css https://files.catbox.moe/8vu0to.css
+
+      - name: Verify file sizes
+        run: |
+          echo "README.md: $(wc -c < README.md) bytes (expected ~8151)"
+          echo "Dockerfile: $(wc -c < Dockerfile) bytes (expected ~1767)"
+          echo "docker-compose.yml: $(wc -c < docker-compose.yml) bytes (expected ~1506)"
+          echo "styles.css: $(wc -c < styles.css) bytes (expected ~34674)"
+
+      - name: Commit and push fixed files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md Dockerfile docker-compose.yml styles.css
+          git diff --staged --stat
+          git commit -m "Fix truncated files: README.md, Dockerfile, docker-compose.yml, styles.css" || echo "No changes to commit"
+          git push
