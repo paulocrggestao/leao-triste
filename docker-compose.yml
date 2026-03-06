@@ -1,0 +1,44 @@
+# ==============================================================================
+# Leão Triste — Docker Compose
+# CRG Gestão Contábil — Recuperação Tributária
+# ==============================================================================
+version: '3.8'
+
+services:
+  leao-triste:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leao-triste:latest
+    container_name: leao-triste-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - WORKERS=${WORKERS:-4}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SECRET_KEY=${SECRET_KEY:-changeme-in-production}
+      - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE:-104857600}
+    volumes:
+      - leao_data:/app/data
+      - leao_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - leao-network
+
+volumes:
+  leao_data:
+    driver: local
+  leao_uploads:
+    driver: local
+
+networks:
+  leao-network:
+    driver: bridge

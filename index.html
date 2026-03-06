@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leão Triste — Recuperação Tributária | CRG Gestão Contábil</title>
+<meta name="description" content="Sistema especializado em identificação e recuperação de créditos tributários. Análise automática de SPED e NF-e.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand">
+          <img src="/lion-logo.png" alt="Leão Triste" class="brand-logo" />
+          <div class="brand-text">
+            <span class="brand-name">Leão Triste</span>
+            <span class="brand-tagline">Recuperação Tributária</span>
+          </div>
+        </div>
+        <nav class="header-nav">
+          <a href="#upload" class="nav-link active">Análise</a>
+          <a href="#results" class="nav-link">Resultados</a>
+          <a href="#about" class="nav-link">Sobre</a>
+        </nav>
+        <div class="header-cta">
+          <span class="powered-by">por <strong>CRG Gestão Contábil</strong></span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero" id="upload">
+      <div class="hero-content">
+        <div class="hero-badge">Sistema de Recuperação Tributária</div>
+        <h1 class="hero-title">
+          Recupere seus <span class="highlight">créditos tributários</span>
+          com inteligência fiscal
+        </h1>
+        <p class="hero-subtitle">
+          Análise automática de arquivos SPED e NF-e para identificação de
+          PIS/COFINS, ICMS-ST e outros créditos recuperáveis.
+        </p>
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-icon">📁</div>
+          <div class="upload-text">
+            <strong>Arraste seus arquivos aqui</strong>
+            <span>ou clique para selecionar</span>
+          </div>
+          <div class="upload-hint">SPED Fiscal, SPED Contribuições, XML NF-e • Máx. 100MB</div>
+          <input type="file" id="fileInput" multiple accept=".txt,.xml,.zip" hidden>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section class="results-section" id="results" style="display:none">
+      <div class="results-inner">
+        <h2 class="section-title">Resultado da Análise</h2>
+        <div id="resultsContent"></div>
+      </div>
+    </section>
+
+    <!-- About -->
+    <section class="about-section" id="about">
+      <div class="about-inner">
+        <h2 class="section-title">Sobre o Sistema</h2>
+        <div class="about-grid">
+          <div class="about-card">
+            <div class="about-icon">🔍</div>
+            <h3>Análise Automática</h3>
+            <p>Identificação automática de NCMs com tributação monofásica, substituição tributária e outras situações especiais.</p>
+          </div>
+          <div class="about-card">
+            <div class="about-icon">💰</div>
+            <h3>Cálculo de Créditos</h3>
+            <p>Estimativa precisa de créditos recuperáveis de PIS/COFINS com base na legislação vigente.</p>
+          </div>
+          <div class="about-card">
+            <div class="about-icon">📊</div>
+            <h3>Relatórios Detalhados</h3>
+            <p>Visualização completa por período, produto e tipo de crédito para embasar pedidos de restituição.</p>
+          </div>
+          <div class="about-card">
+            <div class="about-icon">🔒</div>
+            <h3>Segurança Total</h3>
+            <p>Seus dados fiscais são processados localmente e nunca armazenados em nossos servidores.</p>
+          </div>
+        </div>
+        <div class="about-footer">
+          <img src="/lion-logo-medium.png" alt="CRG Gestão Contábil" class="about-logo" />
+          <p>Desenvolvido por <strong>CRG Gestão Contábil</strong> — especialistas em recuperação tributária</p>
+          <a href="https://eco1.com.br" class="about-link">eco1.com.br</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-inner">
+        <p>© 2025 CRG Gestão Contábil — Leão Triste v1.0</p>
+        <p>Sistema de Recuperação Tributária</p>
+      </div>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
