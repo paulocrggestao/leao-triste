@@ -1,16 +1,17 @@
 # ==============================================================================
 # Leão Triste — Docker Compose
 # CRG Gestão Contábil — Recuperação Tributária
+#
+# Uso:
+#   docker compose up -d          → Inicia o sistema
+#   docker compose down           → Para o sistema
+#   docker compose logs -f app    → Acompanha os logs
 # ==============================================================================
-version: '3.8'
 
 services:
-  leao-triste:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: leao-triste:latest
-    container_name: leao-triste-app
+  app:
+    build: .
+    container_name: leao-triste
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
@@ -18,27 +19,36 @@ services:
       - PORT=8000
       - HOST=0.0.0.0
       - WORKERS=${WORKERS:-4}
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - SECRET_KEY=${SECRET_KEY:-changeme-in-production}
-      - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE:-104857600}
+      - ENVIRONMENT=production
     volumes:
-      - leao_data:/app/data
-      - leao_uploads:/app/uploads
+      # Dados persistentes — banco SQLite e uploads de clientes
+      - leao-data:/app/data
+      - leao-uploads:/app/uploads
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - leao-network
+
+  # Opcional: Nginx como reverse proxy com HTTPS
+  # Descomente se quiser usar Nginx na frente
+  #
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: leao-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - app
 
 volumes:
-  leao_data:
+  leao-data:
     driver: local
-  leao_uploads:
+  leao-uploads:
     driver: local
-
-networks:
-  leao-network:
-    driver: bridge
