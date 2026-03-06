@@ -1,0 +1,30 @@
+name: Commit NCM database
+
+on:
+  push:
+    paths:
+      - ".trigger-ncm"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  commit-ncm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download ncm_database.py
+        run: |
+          curl -L -o ncm_database.py https://files.catbox.moe/577xf3.py
+          echo "Downloaded $(wc -c < ncm_database.py) bytes"
+          head -3 ncm_database.py
+      
+      - name: Commit and push
+        run: |
+          git config user.email "paulo@eco1.com.br"
+          git config user.name "Paulo (automated)"
+          git add ncm_database.py
+          git diff --staged --quiet || git commit -m "Add NCM database (404 NCM entries)"
+          git push
