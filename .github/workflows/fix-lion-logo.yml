@@ -1,0 +1,51 @@
+name: Fix lion-logo-medium.png
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fix-lion-logo.yml'
+  workflow_dispatch:
+
+jobs:
+  fix-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download correct lion-logo-medium.png
+        run: |
+          curl -sL -o lion-logo-medium.png "http://tmpfiles.org/dl/27476282/lion-logo-medium.png"
+          ls -la lion-logo-medium.png
+          file lion-logo-medium.png
+          
+      - name: Verify file size
+        run: |
+          SIZE=$(wc -c < lion-logo-medium.png)
+          echo "File size: $SIZE bytes"
+          if [ "$SIZE" != "58808" ]; then
+            echo "ERROR: Expected 58808 bytes, got $SIZE"
+            exit 1
+          fi
+          echo "File size verified: 58808 bytes"
+
+      - name: Commit and push corrected image
+        run: |
+          git config user.email "paulo@eco1.com.br"
+          git config user.name "paulocrggestao"
+          git add lion-logo-medium.png
+          git diff --cached --stat
+          git commit -m "\ud83e\udd81 Le\u00e3o Triste - fix lion-logo-medium.png (correct full 58KB image)" || echo "Nothing to commit (file may already be correct)"
+          git push
+
+      - name: Remove this workflow file
+        run: |
+          git rm .github/workflows/fix-lion-logo.yml
+          git commit -m "Remove fix workflow (cleanup)"
+          git push
