@@ -1,0 +1,29 @@
+name: Download and commit product_database.py
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download product_database.py
+        run: |
+          curl -L -A "Mozilla/5.0" \
+            "https://tmpfiles.org/dl/27477218/product_database_content.txt" \
+            -o product_database.py
+          echo "Downloaded file size: $(wc -c < product_database.py) bytes"
+          head -5 product_database.py
+
+      - name: Commit and push
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git add product_database.py
+          git commit -m "Add product database (2,022 food products)"
+          git push
