@@ -6,12 +6,17 @@ on:
     paths:
       - '.github/workflows/fix-truncated-files.yml'
 
+permissions:
+  contents: write
+
 jobs:
   fix-files:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download xml_parser.py from catbox.moe
         run: |
@@ -29,5 +34,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add xml_parser.py index.html
           git diff --cached --stat
-          git commit -m "Fix truncated files: restore full xml_parser.py and index.html"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Fix truncated files: restore full xml_parser.py and index.html"
+            git push
+          fi
