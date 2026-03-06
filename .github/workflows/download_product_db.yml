@@ -1,6 +1,10 @@
 name: Download and commit product_database.py
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/download_product_db.yml'
   workflow_dispatch:
 
 jobs:
@@ -25,5 +29,5 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           git add product_database.py
-          git commit -m "Add product database (2,022 food products)"
+          git commit -m "Add product database (2,022 food products)" || echo "Nothing to commit"
           git push
