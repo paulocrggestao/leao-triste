@@ -2,319 +2,523 @@
 """
 xml_parser.py — Parser de XML de NFe/NFCe e arquivos ZIP contendo XMLs.
 
-Extrai dados de itens para alimentar o analysis_engine:
-  - NCM
-  - CST PIS / COFINS
-  - Valor do item
-  - CFOP
-  - Tipo (entrada/saída)
-  - Informações de ICMS / ICMS-ST
-
-Suporta:
-  - NF-e 4.0 (layout 4.00)
-  - NFC-e
-  - Arquivos .xml individuais
-  - Arquivos .zip contendo múltiplos XMLs
-  - Pastas com múltiplos XMLs
+Namespace NFe: http://www.portalfiscal.inf.br/nfe
 """
 
 from __future__ import annotations
 
+import io
 import zipfile
-from pathlib import Path
-from typing import Iterator
-from xml.etree import ElementTree as ET
+from typing import Optional
 
-# Namespace NFe 4.0
-NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+
+try:
+    from lxml import etree as ET
+    LXML_AVAILABLE = True
+except ImportError:
+    import xml.etree.ElementTree as ET  # type: ignore
+    LXML_AVAILABLE = False
+
+# NFe namespace
 NFE_NS = "http://www.portalfiscal.inf.br/nfe"
+NS = {"nfe": NFE_NS}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Utilitários
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper utilities
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _txt(el, tag: str, ns: str = NFE_NS, default: str = "") -> str:
-    """Extrai texto de sub-elemento com namespace."""
-    found = el.find(f"{{{ns}}}{tag}")
-    return found.text.strip() if found is not None and found.text else default
+def _text(element, path: str, default: str = "") -> str:
+    """Safely get text from an element, trying with and without namespace."""
+    if element is None:
+        return default
 
-
-def _float(val: str) -> float:
-    """Converte string para float, tolerando vazio."""
+    # Try with namespace
+    ns_path = "/".join(
+        f"nfe:{p}" if not p.startswith("@") else p
+        for p in path.split("/")
+    )
     try:
-        return float(val.strip()) if val.strip() else 0.0
-    except ValueError:
-        return 0.0
+        el = element.find(ns_path, NS)
+        if el is not None and el.text:
+            return el.text.strip()
+    except Exception:
+        pass
+
+    # Try without namespace (some files strip ns)
+    try:
+        el = element.find(path)
+        if el is not None and el.text:
+            return el.text.strip()
+    except Exception:
+        pass
+
+    return default
 
 
-def _competencia_from_dhemi(dhemi: str) -> str:
-    """Extrai YYYYMM de dHEmi (formato YYYY-MM-DDTHH:MM:SS-HH:MM)."""
-    # 2024-03-15T10:30:00-03:00 → 202403
-    dhemi = dhemi.strip()
-    if len(dhemi) >= 7:
-        return dhemi[:4] + dhemi[5:7]
-    return ""
+def _float(element, path: str, default: float = 0.0) -> float:
+    """Get float value from element."""
+    val = _text(element, path, "")
+    if not val:
+        return default
+    try:
+        return float(val.replace(",", "."))
+    except (ValueError, AttributeError):
+        return default
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Parser de item de NFe
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _parse_det(det: ET.Element, tipo_nfe: str, competencia: str) -> dict | None:
-    """
-    Parseia um elemento <det> (item) de NFe.
-
-    Retorna dict compatível com nfe_items do analysis_engine:
-        ncm, cst_pis, cst_cofins, valor_item, cfop, tipo, competencia,
-        cst_icms, valor_bc_icms, aliq_icms, valor_icms,
-        valor_bc_st, aliq_st, valor_icms_st
-    """
-    prod = det.find(f"{{{NFE_NS}}}prod")
-    if prod is None:
+def _find(element, path: str):
+    """Find element trying both with and without namespace."""
+    if element is None:
         return None
 
-    ncm = _txt(prod, "NCM")
-    cfop = _txt(prod, "CFOP")
-    vl_prod = _float(_txt(prod, "vProd"))
-    vl_desc = _float(_txt(prod, "vDesc"))
-    valor_item = vl_prod - vl_desc
-
-    # ICMS
-    imposto = det.find(f"{{{NFE_NS}}}imposto")
-    cst_icms = ""
-    valor_bc_icms = 0.0
-    aliq_icms = 0.0
-    valor_icms = 0.0
-    valor_bc_st = 0.0
-    aliq_st = 0.0
-    valor_icms_st = 0.0
-
-    if imposto is not None:
-        icms_el = imposto.find(f"{{{NFE_NS}}}ICMS")
-        if icms_el is not None:
-            # Tenta todos os filhos (ICMS00, ICMS10, ICMS20, ..., ICMSST)
-            for child in icms_el:
-                tag = child.tag.replace(f"{{{NFE_NS}}}", "")
-                cst_icms = _txt(child, "CST") or _txt(child, "CSOSN")
-                valor_bc_icms = _float(_txt(child, "vBC"))
-                aliq_icms = _float(_txt(child, "pICMS"))
-                valor_icms = _float(_txt(child, "vICMS"))
-                valor_bc_st = _float(_txt(child, "vBCST"))
-                aliq_st = _float(_txt(child, "pICMSST"))
-                valor_icms_st = _float(_txt(child, "vICMSST"))
-                break  # Pega apenas o primeiro grupo
-
-        # PIS
-        pis_el = imposto.find(f"{{{NFE_NS}}}PIS")
-        cst_pis = ""
-        if pis_el is not None:
-            for child in pis_el:
-                cst_pis = _txt(child, "CST")
-                break
-
-        # COFINS
-        cofins_el = imposto.find(f"{{{NFE_NS}}}COFINS")
-        cst_cofins = ""
-        if cofins_el is not None:
-            for child in cofins_el:
-                cst_cofins = _txt(child, "CST")
-                break
-    else:
-        cst_pis = ""
-        cst_cofins = ""
-
-    # Tipo: entrada ou saída pelo CFOP
-    if cfop.startswith(("1", "2", "3")):
-        tipo = "E"
-    else:
-        tipo = "S"
-
-    # Override pelo tipo da NF-e
-    if tipo_nfe == "entrada":
-        tipo = "E"
-    elif tipo_nfe == "saida":
-        tipo = "S"
-
-    return {
-        "ncm": ncm.replace(".", ""),
-        "cst_pis": cst_pis.zfill(2) if cst_pis else "",
-        "cst_cofins": cst_cofins.zfill(2) if cst_cofins else "",
-        "valor_item": valor_item,
-        "cfop": cfop,
-        "tipo": tipo,
-        "competencia": competencia,
-        "cst_icms": cst_icms,
-        "valor_bc_icms": valor_bc_icms,
-        "aliq_icms": aliq_icms,
-        "valor_icms": valor_icms,
-        "valor_bc_st": valor_bc_st,
-        "aliq_st": aliq_st,
-        "valor_icms_st": valor_icms_st,
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Parser de NF-e XML
-# ──────────────────────────────────────────────────────────────────────────────
-
-def parse_nfe_xml(xml_content: str | bytes) -> list[dict]:
-    """
-    Parseia um XML de NF-e/NFC-e e retorna lista de itens (dicts).
-
-    xml_content: string ou bytes do XML da NF-e.
-    """
-    if isinstance(xml_content, bytes):
-        xml_content = xml_content.decode("utf-8", errors="replace")
+    ns_path = "/".join(f"nfe:{p}" for p in path.split("/"))
+    try:
+        result = element.find(ns_path, NS)
+        if result is not None:
+            return result
+    except Exception:
+        pass
 
     try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError as e:
-        return []  # XML inválido
+        result = element.find(path)
+        if result is not None:
+            return result
+    except Exception:
+        pass
 
-    # Remove namespaces para facilitar busca (alguns XMLs não têm)
-    # Tenta encontrar nfeProc ou NFe diretamente
-    nfe = root.find(f"{{{NFE_NS}}}NFe")
-    if nfe is None:
-        nfe = root.find("NFe")  # Sem namespace
-    if nfe is None:
-        # Talvez root já seja NFe
-        if root.tag in (f"{{{NFE_NS}}}NFe", "NFe"):
-            nfe = root
-    if nfe is None:
+    return None
+
+
+def _findall(element, path: str) -> list:
+    """Findall trying both with and without namespace."""
+    if element is None:
         return []
 
-    infNFe = nfe.find(f"{{{NFE_NS}}}infNFe")
-    if infNFe is None:
-        infNFe = nfe.find("infNFe")
-    if infNFe is None:
-        return []
+    ns_path = "/".join(f"nfe:{p}" for p in path.split("/"))
+    try:
+        result = element.findall(ns_path, NS)
+        if result:
+            return result
+    except Exception:
+        pass
 
-    # Cabeçalho: data e tipo
-    ide = infNFe.find(f"{{{NFE_NS}}}ide")
-    dhemi = ""
-    tipo_nfe = "saida"  # default
-    if ide is not None:
-        dhemi = _txt(ide, "dhEmi") or _txt(ide, "dEmi")
-        tpnf = _txt(ide, "tpNF")  # 0=entrada, 1=saída
-        if tpnf == "0":
-            tipo_nfe = "entrada"
-        elif tpnf == "1":
-            tipo_nfe = "saida"
+    try:
+        result = element.findall(path)
+        if result:
+            return result
+    except Exception:
+        pass
 
-    competencia = _competencia_from_dhemi(dhemi)
-
-    # Itera sobre itens <det>
-    items = []
-    for det in infNFe.findall(f"{{{NFE_NS}}}det"):
-        item = _parse_det(det, tipo_nfe, competencia)
-        if item:
-            items.append(item)
-
-    return items
+    return []
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Leitura de arquivos e pastas
-# ──────────────────────────────────────────────────────────────────────────────
-
-def parse_nfe_file(path: str | Path) -> list[dict]:
-    """Lê um arquivo XML de NF-e e retorna lista de itens."""
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Arquivo não encontrado: {path}")
-    content = path.read_bytes()
-    return parse_nfe_xml(content)
+def _strip_ns(tag: str) -> str:
+    """Remove namespace from tag name."""
+    if "}" in tag:
+        return tag.split("}")[1]
+    return tag
 
 
-def parse_nfe_zip(path: str | Path) -> list[dict]:
+# ─────────────────────────────────────────────────────────────────────────────
+# ICMS extraction — handles multiple CST sub-elements
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_icms_data(imposto_el) -> dict:
     """
-    Lê um arquivo ZIP contendo XMLs de NF-e e retorna lista de itens
-    de todos os XMLs encontrados.
+    Extract ICMS data from det/imposto/ICMS element.
+    Handles sub-elements: ICMS00, ICMS10, ICMS20, ICMS30, ICMS40, ICMS51, 
+    ICMS60, ICMS70, ICMS90, ICMSSN101, ICMSSN102, etc.
     """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Arquivo ZIP não encontrado: {path}")
+    data = {
+        "cst_icms": "",
+        "csosn": "",
+        "base_icms": 0.0,
+        "aliq_icms": 0.0,
+        "valor_icms": 0.0,
+        "base_icms_st": 0.0,
+        "aliq_icms_st": 0.0,
+        "valor_icms_st": 0.0,
+        "valor_icms_mono": 0.0,
+    }
 
-    all_items: list[dict] = []
-    with zipfile.ZipFile(path, "r") as zf:
-        for name in zf.namelist():
-            if name.lower().endswith(".xml"):
-                try:
-                    content = zf.read(name)
-                    items = parse_nfe_xml(content)
-                    all_items.extend(items)
-                except Exception:
-                    pass  # Ignora XMLs inválidos dentro do ZIP
+    if imposto_el is None:
+        return data
 
-    return all_items
+    icms_container = _find(imposto_el, "ICMS")
+    if icms_container is None:
+        return data
+
+    # Iterate children to find the actual ICMS sub-element
+    for child in icms_container:
+        tag = _strip_ns(child.tag)
+
+        # CRT=1 (Simples Nacional) uses CSOSN
+        if tag.startswith("ICMSSN"):
+            data["csosn"] = _text(child, "CSOSN") or _text(child, "indSN")
+            data["base_icms"] = _float(child, "vBC")
+            data["aliq_icms"] = _float(child, "pICMS")
+            data["valor_icms"] = _float(child, "vICMS")
+            data["base_icms_st"] = _float(child, "vBCST")
+            data["aliq_icms_st"] = _float(child, "pICMSST")
+            data["valor_icms_st"] = _float(child, "vICMSST")
+        else:
+            # Regular CST-based ICMS
+            data["cst_icms"] = _text(child, "CST") or _text(child, "orig") + _text(child, "CST")
+            data["base_icms"] = _float(child, "vBC")
+            data["aliq_icms"] = _float(child, "pICMS")
+            data["valor_icms"] = _float(child, "vICMS")
+            data["base_icms_st"] = _float(child, "vBCST")
+            data["aliq_icms_st"] = _float(child, "pICMSST")
+            data["valor_icms_st"] = _float(child, "vICMSST")
+            # Monophasic ICMS for fuels
+            data["valor_icms_mono"] = _float(child, "vICMSMono")
+
+    return data
 
 
-def parse_nfe_folder(folder: str | Path) -> list[dict]:
+def _extract_pis_data(imposto_el) -> dict:
+    """Extract PIS data from det/imposto/PIS element."""
+    data = {
+        "cst_pis": "",
+        "base_pis": 0.0,
+        "aliq_pis": 0.0,
+        "valor_pis": 0.0,
+    }
+
+    if imposto_el is None:
+        return data
+
+    pis_el = _find(imposto_el, "PIS")
+    if pis_el is None:
+        return data
+
+    for child in pis_el:
+        tag = _strip_ns(child.tag)
+        if tag in ("PISAliq", "PISQtde", "PISNT", "PISOutr"):
+            data["cst_pis"] = _text(child, "CST")
+            data["base_pis"] = _float(child, "vBC")
+            data["aliq_pis"] = _float(child, "pPIS")
+            data["valor_pis"] = _float(child, "vPIS")
+
+    return data
+
+
+def _extract_cofins_data(imposto_el) -> dict:
+    """Extract COFINS data from det/imposto/COFINS element."""
+    data = {
+        "cst_cofins": "",
+        "base_cofins": 0.0,
+        "aliq_cofins": 0.0,
+        "valor_cofins": 0.0,
+    }
+
+    if imposto_el is None:
+        return data
+
+    cofins_el = _find(imposto_el, "COFINS")
+    if cofins_el is None:
+        return data
+
+    for child in cofins_el:
+        tag = _strip_ns(child.tag)
+        if tag in ("COFINSAliq", "COFINSQtde", "COFINSNT", "COFINSOutr"):
+            data["cst_cofins"] = _text(child, "CST")
+            data["base_cofins"] = _float(child, "vBC")
+            data["aliq_cofins"] = _float(child, "pCOFINS")
+            data["valor_cofins"] = _float(child, "vCOFINS")
+
+    return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NFeParser
+# ─────────────────────────────────────────────────────────────────────────────
+
+class NFeParser:
     """
-    Lê todos os XMLs de NF-e de uma pasta (recursivo).
-    """
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise NotADirectoryError(f"Pasta não encontrada: {folder}")
+    Parser para NFe/NFCe em XML ou ZIP contendo múltiplos XMLs.
 
-    all_items: list[dict] = []
-    for xml_path in folder.rglob("*.xml"):
+    Usage:
+        parser = NFeParser()
+        nfe_data = parser.parse_xml(xml_bytes)
+        items = parser.extract_items(nfe_data)
+
+        # Para ZIP:
+        nfes = parser.parse_zip(zip_bytes)
+    """
+
+    def parse_xml(self, xml_content: bytes) -> dict:
+        """
+        Parse a single NFe XML file.
+
+        Args:
+            xml_content: raw bytes of the XML file
+
+        Returns:
+            Structured dict with all NFe data
+        """
         try:
-            items = parse_nfe_file(xml_path)
-            all_items.extend(items)
-        except Exception:
-            pass
+            if LXML_AVAILABLE:
+                root = ET.fromstring(xml_content)
+            else:
+                root = ET.fromstring(xml_content.decode("utf-8", errors="replace"))
+        except Exception as e:
+            return {"error": str(e), "items": []}
 
-    return all_items
+        # Find infNFe — may be wrapped in nfeProc
+        inf_nfe = None
+
+        # Try nfeProc/NFe/infNFe
+        inf_nfe = _find(root, "NFe/infNFe")
+        if inf_nfe is None:
+            # Try directly on root (some files are just NFe)
+            inf_nfe = _find(root, "infNFe")
+        if inf_nfe is None:
+            # Root might be NFe itself
+            inf_nfe = root.find(f"{{{NFE_NS}}}infNFe")
+        if inf_nfe is None:
+            # Last resort: tag scan
+            tag = _strip_ns(root.tag)
+            if tag == "NFe":
+                for child in root:
+                    if _strip_ns(child.tag) == "infNFe":
+                        inf_nfe = child
+                        break
+            elif tag == "nfeProc":
+                for child in root:
+                    if _strip_ns(child.tag) == "NFe":
+                        for grandchild in child:
+                            if _strip_ns(grandchild.tag) == "infNFe":
+                                inf_nfe = grandchild
+                                break
+                        break
+
+        if inf_nfe is None:
+            return {"error": "infNFe_not_found", "items": []}
+
+        # Parse ide (document identification)
+        ide = _find(inf_nfe, "ide")
+        emit = _find(inf_nfe, "emit")
+        dest = _find(inf_nfe, "dest")
+        total = _find(inf_nfe, "total/ICMSTot")
+
+        nfe_data = {
+            # Document
+            "chave": (inf_nfe.get("Id") or "").replace("NFe", ""),
+            "modelo": _text(ide, "mod"),
+            "serie": _text(ide, "serie"),
+            "numero": _text(ide, "nNF"),
+            "data_emissao": _text(ide, "dhEmi") or _text(ide, "dEmi"),
+            "natureza_operacao": _text(ide, "natOp"),
+            "tipo_operacao": _text(ide, "tpNF"),  # 0=entrada, 1=saída
+            "cfop_principal": _text(ide, "CFOP"),
+            # Emitter
+            "emitente_cnpj": _text(emit, "CNPJ"),
+            "emitente_cpf": _text(emit, "CPF"),
+            "emitente_nome": _text(emit, "xNome"),
+            "emitente_uf": _text(_find(emit, "enderEmit") if emit is not None else None, "UF"),
+            # Recipient
+            "destinatario_cnpj": _text(dest, "CNPJ") if dest is not None else "",
+            "destinatario_cpf": _text(dest, "CPF") if dest is not None else "",
+            "destinatario_nome": _text(dest, "xNome") if dest is not None else "",
+            # Totals
+            "total_produtos": _float(total, "vProd"),
+            "total_nota": _float(total, "vNF"),
+            "total_icms": _float(total, "vICMS"),
+            "total_icms_st": _float(total, "vST"),
+            "total_pis": _float(total, "vPIS"),
+            "total_cofins": _float(total, "vCOFINS"),
+            "total_ipi": _float(total, "vIPI"),
+            "total_frete": _float(total, "vFrete"),
+            # Items
+            "items": [],
+        }
+
+        # Parse items (det elements)
+        det_elements = _findall(inf_nfe, "det")
+        for det in det_elements:
+            prod = _find(det, "prod")
+            imposto = _find(det, "imposto")
+
+            if prod is None:
+                continue
+
+            icms_data = _extract_icms_data(imposto)
+            pis_data = _extract_pis_data(imposto)
+            cofins_data = _extract_cofins_data(imposto)
+
+            item = {
+                "numero_item": det.get("nItem", ""),
+                "ncm": _text(prod, "NCM"),
+                "cfop": _text(prod, "CFOP"),
+                "codigo_produto": _text(prod, "cProd"),
+                "descricao": _text(prod, "xProd"),
+                "ean": _text(prod, "cEAN"),
+                "unidade": _text(prod, "uCom"),
+                "quantidade": _float(prod, "qCom"),
+                "valor_unitario": _float(prod, "vUnCom"),
+                "valor_total": _float(prod, "vProd"),
+                "valor_desconto": _float(prod, "vDesc"),
+                # ICMS
+                "cst_icms": icms_data["cst_icms"] or icms_data["csosn"],
+                "csosn": icms_data["csosn"],
+                "base_icms": icms_data["base_icms"],
+                "aliq_icms": icms_data["aliq_icms"],
+                "valor_icms": icms_data["valor_icms"],
+                "base_icms_st": icms_data["base_icms_st"],
+                "aliq_icms_st": icms_data["aliq_icms_st"],
+                "valor_icms_st": icms_data["valor_icms_st"],
+                # PIS
+                "cst_pis": pis_data["cst_pis"],
+                "base_pis": pis_data["base_pis"],
+                "aliq_pis": pis_data["aliq_pis"],
+                "valor_pis": pis_data["valor_pis"],
+                # COFINS
+                "cst_cofins": cofins_data["cst_cofins"],
+                "base_cofins": cofins_data["base_cofins"],
+                "aliq_cofins": cofins_data["aliq_cofins"],
+                "valor_cofins": cofins_data["valor_cofins"],
+            }
+            nfe_data["items"].append(item)
+
+        return nfe_data
+
+    def parse_zip(self, zip_content: bytes) -> list:
+        """
+        Parse a ZIP archive containing multiple NFe XML files.
+
+        Args:
+            zip_content: raw bytes of the ZIP archive
+
+        Returns:
+            List of parsed NFe dicts
+        """
+        results = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
+                for name in zf.namelist():
+                    lower = name.lower()
+                    if not (lower.endswith(".xml") or lower.endswith("-nfe.xml")):
+                        continue
+                    try:
+                        xml_bytes = zf.read(name)
+                        nfe = self.parse_xml(xml_bytes)
+                        nfe["_source_filename"] = name
+                        results.append(nfe)
+                    except Exception as e:
+                        results.append({
+                            "_source_filename": name,
+                            "error": str(e),
+                            "items": [],
+                        })
+        except zipfile.BadZipFile as e:
+            return [{"error": f"Invalid ZIP: {e}", "items": []}]
+        return results
+
+    def extract_items(self, nfe_data: dict) -> list:
+        """
+        Extract all items with their tax info from a parsed NFe.
+
+        Args:
+            nfe_data: dict returned by parse_xml()
+
+        Returns:
+            List of item dicts with all tax fields
+        """
+        if not nfe_data or "items" not in nfe_data:
+            return []
+
+        items = []
+        for raw_item in nfe_data["items"]:
+            item = {
+                # Document info
+                "documento_numero": nfe_data.get("numero", ""),
+                "documento_serie": nfe_data.get("serie", ""),
+                "documento_data": nfe_data.get("data_emissao", ""),
+                "tipo_operacao": nfe_data.get("tipo_operacao", "1"),
+                "emitente_cnpj": nfe_data.get("emitente_cnpj", ""),
+                "emitente_nome": nfe_data.get("emitente_nome", ""),
+                # Product
+                "ncm": raw_item.get("ncm", ""),
+                "cfop": raw_item.get("cfop", ""),
+                "codigo_produto": raw_item.get("codigo_produto", ""),
+                "descricao": raw_item.get("descricao", ""),
+                "quantidade": raw_item.get("quantidade", 0.0),
+                "valor_unitario": raw_item.get("valor_unitario", 0.0),
+                "valor_total": raw_item.get("valor_total", 0.0),
+                # ICMS
+                "cst_icms": raw_item.get("cst_icms", ""),
+                "base_icms": raw_item.get("base_icms", 0.0),
+                "aliq_icms": raw_item.get("aliq_icms", 0.0),
+                "valor_icms": raw_item.get("valor_icms", 0.0),
+                "base_icms_st": raw_item.get("base_icms_st", 0.0),
+                "aliq_icms_st": raw_item.get("aliq_icms_st", 0.0),
+                "valor_icms_st": raw_item.get("valor_icms_st", 0.0),
+                # PIS
+                "cst_pis": raw_item.get("cst_pis", ""),
+                "base_pis": raw_item.get("base_pis", 0.0),
+                "aliq_pis": raw_item.get("aliq_pis", 0.0),
+                "valor_pis": raw_item.get("valor_pis", 0.0),
+                # COFINS
+                "cst_cofins": raw_item.get("cst_cofins", ""),
+                "base_cofins": raw_item.get("base_cofins", 0.0),
+                "aliq_cofins": raw_item.get("aliq_cofins", 0.0),
+                "valor_cofins": raw_item.get("valor_cofins", 0.0),
+                # Source
+                "_source": "nfe_xml",
+            }
+            items.append(item)
+        return items
+
+    def extract_items_from_list(self, nfe_list: list) -> list:
+        """Extract all items from a list of parsed NFes."""
+        all_items = []
+        for nfe in nfe_list:
+            all_items.extend(self.extract_items(nfe))
+        return all_items
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Extração de faturamento para Tema 69
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI for testing
+# ─────────────────────────────────────────────────────────────────────────────
 
-def extract_faturamento_from_nfes(
-    nfe_items: list[dict],
-    regime_tributario: str = "lucro_presumido",
-) -> list[dict]:
-    """
-    Agrega itens de NFe por competência para montar faturamento_mensal
-    compatível com _analisa_tema69.
+if __name__ == "__main__":
+    import sys
 
-    Calcula ICMS destacado somando valor_icms de todos os itens de saída.
-    """
-    from collections import defaultdict
+    if len(sys.argv) < 2:
+        print("Usage: python xml_parser.py <file.xml|file.zip>")
+        sys.exit(1)
 
-    por_competencia: dict[str, dict] = defaultdict(lambda: {
-        "receita_bruta": 0.0,
-        "icms_destacado": 0.0,
-        "pis_pago": 0.0,
-        "cofins_pago": 0.0,
-    })
+    path = sys.argv[1]
+    parser = NFeParser()
 
-    for item in nfe_items:
-        comp = item.get("competencia", "")
-        if not comp:
-            continue
-        tipo = item.get("tipo", "S")
-        if tipo != "S":
-            continue  # Apenas saídas
+    with open(path, "rb") as f:
+        content = f.read()
 
-        row = por_competencia[comp]
-        row["receita_bruta"] += item.get("valor_item", 0.0)
-        row["icms_destacado"] += item.get("valor_icms", 0.0)
-        # PIS e COFINS destacados nos XMLs (se disponíveis)
-        # Em geral não estão presentes no XML — serão calculados pelo motor
+    if path.lower().endswith(".zip"):
+        nfes = parser.parse_zip(content)
+        print(f"Parsed {len(nfes)} NFes from ZIP")
+        for nfe in nfes[:3]:
+            if "error" in nfe:
+                print(f"  Error in {nfe.get('_source_filename', '')}: {nfe['error']}")
+            else:
+                print(f"  NFe {nfe.get('numero', '?')} — {nfe.get('emitente_nome', '?')} — {len(nfe.get('items', []))} items")
+                print(f"    Total: R$ {nfe.get('total_nota', 0):.2f}")
+    else:
+        nfe = parser.parse_xml(content)
+        if "error" in nfe:
+            print(f"Error: {nfe['error']}")
+        else:
+            print(f"NFe {nfe.get('numero', '?')} — Série {nfe.get('serie', '?')}")
+            print(f"Emitente: {nfe.get('emitente_nome', '?')} ({nfe.get('emitente_cnpj', '?')})")
+            print(f"Data: {nfe.get('data_emissao', '?')}")
+            print(f"Total nota: R$ {nfe.get('total_nota', 0):.2f}")
+            print(f"Items: {len(nfe.get('items', []))}")
 
-    result = []
-    for comp, data in sorted(por_competencia.items()):
-        result.append({
-            "competencia": comp,
-            "receita_bruta": round(data["receita_bruta"], 2),
-            "icms_destacado": round(data["icms_destacado"], 2),
-            "pis_pago": round(data["pis_pago"], 2),
-            "cofins_pago": round(data["cofins_pago"], 2),
-            "regime_tributario": regime_tributario,
-        })
-
-    return result
+            items = parser.extract_items(nfe)
+            for item in items[:5]:
+                print(f"\n  Item: {item['descricao']} (NCM {item['ncm']})")
+                print(f"    CFOP: {item['cfop']}, Qtd: {item['quantidade']}, Total: R$ {item['valor_total']:.2f}")
+                print(f"    CST PIS: {item['cst_pis']}, VL PIS: R$ {item['valor_pis']:.2f}")
+                print(f"    CST COFINS: {item['cst_cofins']}, VL COFINS: R$ {item['valor_cofins']:.2f}")
